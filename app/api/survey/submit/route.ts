@@ -5,6 +5,7 @@ import { validateSurveyData } from '@/lib/validation';
 import { validateCSRF } from '@/lib/csrf-protection';
 import { validateEncryptedToken } from '@/lib/token-crypto';
 import { verifyRecaptcha } from '@/lib/recaptcha';
+import { log } from 'console';
 
 export async function POST(request: NextRequest) {
   try {
@@ -120,7 +121,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error: '无效的提交请求',
-          message: '请刷新页面后重试'
+          message: 'Token无效，请刷新页面后重试'
         },
         { status: 400 }
       );
@@ -319,7 +320,7 @@ export async function POST(request: NextRequest) {
     } else {
       console.error('[Survey Submit Error]', error);
     }
-
+    console.log(error)
     return NextResponse.json(
       {
         error: '提交失败',

@@ -28,6 +28,7 @@ export default function SuanZhangFullSurvey() {
   const [viewMode, setViewMode] = useState<"survey" | "dashboard">("survey");
   const [currentSelection, setCurrentSelection] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const recaptchaRef = useRef<ReCAPTCHA>(null);
 
   // 初始化行为追踪
@@ -36,12 +37,16 @@ export default function SuanZhangFullSurvey() {
   }, []);
 
   const submitData = async (finalAnswers: Record<string, any>) => {
+    setIsSubmitting(true);
+    setSubmitError(null);
+
     try {
       // 1. 检查客户端速率限制
       const rateLimitCheck = canSubmit();
       if (!rateLimitCheck.allowed) {
         setSubmitError(rateLimitCheck.message || "提交过于频繁，请稍后再试");
-        return;
+        setIsSubmitting(false);
+        return false;
       }
 
       // 2. 验证人类行为
@@ -50,14 +55,16 @@ export default function SuanZhangFullSurvey() {
         setSubmitError(
           `检测到异常行为：${behaviorCheck.reason}，请正常填写问卷`,
         );
-        return;
+        setIsSubmitting(false);
+        return false;
       }
 
       // 3. 获取reCAPTCHA token
       const recaptchaToken = recaptchaRef.current?.getValue();
       if (!recaptchaToken) {
         setSubmitError("请完成人机验证");
-        return;
+        setIsSubmitting(false);
+        return false;
       }
 
       // 4. 生成加密token（基于问卷数据 + 客户端时间戳）
@@ -104,33 +111,48 @@ export default function SuanZhangFullSurvey() {
         } else {
           setSubmitError(data.error || "提交失败，请稍后重试");
         }
-        throw new Error(data.error || "提交失败");
+        setIsSubmitting(false);
+        recaptchaRef.current?.reset();
+        return false;
       }
 
-      // 6. 提交成功，记录到本地存储
+      // 7. 提交成功，记录到本地存储
       recordSubmission();
       setSubmitError(null);
+      setIsSubmitting(false);
 
-      // 7. 重置reCAPTCHA
+      // 8. 重置reCAPTCHA
       recaptchaRef.current?.reset();
+
+      // 9. 返回成功标志
+      return true;
     } catch (e) {
       console.error("Error submitting survey:", e);
+      setSubmitError("提交失败，请稍后重试");
+      setIsSubmitting(false);
 
       // 提交失败也重置reCAPTCHA
       recaptchaRef.current?.reset();
+      return false;
     }
   };
 
-  const handleAnswer = (key: string, value: any) => {
+  const handleAnswer = async (key: string, value: any) => {
     const newAns = { ...answers, [key]: value };
     setAnswers(newAns);
     setCurrentSelection(null);
 
+    // 如果是最后一题，先提交数据
     if (step === questions.length) {
-      submitData(newAns);
+      const success = await submitData(newAns);
+      // 只有提交成功才跳转到结果页
+      if (success) {
+        setTimeout(() => setStep((prev) => prev + 1), 250);
+      }
+    } else {
+      // 非最后一题，直接跳转
+      setTimeout(() => setStep((prev) => prev + 1), 250);
     }
-
-    setTimeout(() => setStep((prev) => prev + 1), 250);
   };
 
   const handleMulti = (key: string, val: string) => {
@@ -141,9 +163,18 @@ export default function SuanZhangFullSurvey() {
     setAnswers({ ...answers, [key]: next });
   };
 
-  const submitMulti = () => {
-    if (step === questions.length) submitData(answers);
-    setStep((prev) => prev + 1);
+  const submitMulti = async () => {
+    // 如果是最后一题，先提交数据
+    if (step === questions.length) {
+      const success = await submitData(answers);
+      // 只有提交成功才跳转到结果页
+      if (success) {
+        setStep((prev) => prev + 1);
+      }
+    } else {
+      // 非最后一题，直接跳转
+      setStep((prev) => prev + 1);
+    }
   };
 
   if (viewMode === "dashboard")
@@ -333,11 +364,18 @@ export default function SuanZhangFullSurvey() {
 
                 <button
                   onClick={submitMulti}
-                  className="w-full py-4 bg-stone-100 text-stone-900 font-bold mt-6 hover:bg-white rounded disabled:opacity-50"
-                  disabled={!answers[q.id] || answers[q.id].length === 0}
+                  className="w-full py-4 bg-stone-100 text-stone-900 font-bold mt-6 hover:bg-white rounded disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  disabled={!answers[q.id] || answers[q.id].length === 0 || isSubmitting}
                 >
-                  确认提交
+                  {isSubmitting ? "提交中..." : "确认提交"}
                 </button>
+
+                {/* 显示提交错误 */}
+                {submitError && (
+                  <div className="mt-4 p-4 bg-red-900/20 border border-red-600 rounded text-red-400 text-sm">
+                    {submitError}
+                  </div>
+                )}
               </>
             )}
           </div>

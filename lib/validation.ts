@@ -131,8 +131,16 @@ export function validateSurveyData(data: unknown): ValidationResult {
   }
 
   // 10. 验证字符串长度（防止超长输入）
+  // 排除技术字段（submitToken、recaptchaToken、behaviorData）
   const maxStringLength = 200;
+  const technicalFields = ['submitToken', 'recaptchaToken', 'behaviorData'];
+
   for (const [key, value] of Object.entries(surveyData)) {
+    // 跳过技术字段的长度验证
+    if (technicalFields.includes(key)) {
+      continue;
+    }
+
     if (typeof value === 'string' && value.length > maxStringLength) {
       errors.push(`${key} 长度超过限制 (最大 ${maxStringLength} 字符)`);
     }

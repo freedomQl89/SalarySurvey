@@ -90,12 +90,14 @@ export function generateSubmitToken(): string {
 /**
  * 验证提交 token 格式是否有效
  * 只检查 token 格式和时间，不检查是否已使用
+ * 支持加密token格式：timestamp-clientTimestamp-hash（3部分）
  */
 export function validateSubmitTokenFormat(token: string): boolean {
   if (!token) return false;
 
   const parts = token.split("-");
-  if (parts.length !== 2) return false;
+  // 支持加密token格式（3部分：timestamp-clientTimestamp-hash）
+  if (parts.length !== 3) return false;
 
   const timestamp = parseInt(parts[0] || '');
   if (isNaN(timestamp)) return false;
