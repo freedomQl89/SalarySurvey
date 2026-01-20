@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "算账 2025 - Reckoning",
+  title: "算账 2025 - Reckoning-蛙蛤蛤",
   description: "2025 年度全网生存状况匿名调查",
 };
 

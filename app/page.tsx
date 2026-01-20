@@ -1,22 +1,31 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from "react";
 import {
-  ArrowRight, Lock, ShieldCheck, BarChart3,
-  ChevronRight, Check, Calculator
-} from 'lucide-react';
-import ReCAPTCHA from 'react-google-recaptcha';
-import { questions } from '@/lib/questions';
-import DataDashboard from '@/components/DataDashboard';
-import SafetyResult from '@/components/SafetyResult';
-import { canSubmit, recordSubmission } from '@/lib/client-rate-limit';
-import { initBehaviorTracking, validateHumanBehavior, getBehaviorData } from '@/lib/bot-detection';
-import { generateEncryptedToken } from '@/lib/client-token-crypto';
+  ArrowRight,
+  Lock,
+  ShieldCheck,
+  BarChart3,
+  ChevronRight,
+  Check,
+  Calculator,
+} from "lucide-react";
+import ReCAPTCHA from "react-google-recaptcha";
+import { questions } from "@/lib/questions";
+import DataDashboard from "@/components/DataDashboard";
+import SafetyResult from "@/components/SafetyResult";
+import { canSubmit, recordSubmission } from "@/lib/client-rate-limit";
+import {
+  initBehaviorTracking,
+  validateHumanBehavior,
+  getBehaviorData,
+} from "@/lib/bot-detection";
+import { generateEncryptedToken } from "@/lib/client-token-crypto";
 
 export default function SuanZhangFullSurvey() {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, any>>({});
-  const [viewMode, setViewMode] = useState<'survey' | 'dashboard'>('survey');
+  const [viewMode, setViewMode] = useState<"survey" | "dashboard">("survey");
   const [currentSelection, setCurrentSelection] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const recaptchaRef = useRef<ReCAPTCHA>(null);
@@ -31,50 +40,56 @@ export default function SuanZhangFullSurvey() {
       // 1. 检查客户端速率限制
       const rateLimitCheck = canSubmit();
       if (!rateLimitCheck.allowed) {
-        setSubmitError(rateLimitCheck.message || '提交过于频繁，请稍后再试');
+        setSubmitError(rateLimitCheck.message || "提交过于频繁，请稍后再试");
         return;
       }
 
       // 2. 验证人类行为
       const behaviorCheck = validateHumanBehavior();
       if (!behaviorCheck.isHuman) {
-        setSubmitError(`检测到异常行为：${behaviorCheck.reason}，请正常填写问卷`);
+        setSubmitError(
+          `检测到异常行为：${behaviorCheck.reason}，请正常填写问卷`,
+        );
         return;
       }
 
       // 3. 获取reCAPTCHA token
-      const recaptchaToken = await recaptchaRef.current?.executeAsync();
+      const recaptchaToken = recaptchaRef.current?.getValue();
       if (!recaptchaToken) {
-        setSubmitError('请完成人机验证');
+        setSubmitError("请完成人机验证");
         return;
       }
 
       // 4. 生成加密token（基于问卷数据 + 客户端时间戳）
       const clientTimestamp = Date.now();
-      const submitToken = await generateEncryptedToken({
-        industry: finalAnswers['industry'],
-        salary_months: finalAnswers['salary_months'],
-        personal_income: finalAnswers['personal_income'],
-        friends_status: finalAnswers['friends_status'],
-        personal_arrears: finalAnswers['personal_arrears'],
-        friends_arrears_perception: finalAnswers['friends_arrears_perception'],
-        welfare_cut: finalAnswers['welfare_cut']
-      }, clientTimestamp);
+      const submitToken = await generateEncryptedToken(
+        {
+          industry: finalAnswers["industry"],
+          salary_months: finalAnswers["salary_months"],
+          personal_income: finalAnswers["personal_income"],
+          friends_status: finalAnswers["friends_status"],
+          personal_arrears: finalAnswers["personal_arrears"],
+          friends_arrears_perception:
+            finalAnswers["friends_arrears_perception"],
+          welfare_cut: finalAnswers["welfare_cut"],
+        },
+        clientTimestamp,
+      );
 
       // 5. 获取行为数据
       const behaviorData = getBehaviorData();
 
       // 6. 发送请求
-      const response = await fetch('/api/survey/submit', {
-        method: 'POST',
+      const response = await fetch("/api/survey/submit", {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           ...finalAnswers,
           submitToken,
           behaviorData,
-          recaptchaToken
+          recaptchaToken,
         }),
       });
 
@@ -83,13 +98,13 @@ export default function SuanZhangFullSurvey() {
       if (!response.ok) {
         // 处理错误
         if (response.status === 429 || response.status === 503) {
-          setSubmitError(data.message || '提交过于频繁，请稍后再试');
-        } else if (response.status === 403 && data.error?.includes('行为')) {
-          setSubmitError(data.error || '检测到异常行为');
+          setSubmitError(data.message || "提交过于频繁，请稍后再试");
+        } else if (response.status === 403 && data.error?.includes("行为")) {
+          setSubmitError(data.error || "检测到异常行为");
         } else {
-          setSubmitError(data.error || '提交失败，请稍后重试');
+          setSubmitError(data.error || "提交失败，请稍后重试");
         }
-        throw new Error(data.error || '提交失败');
+        throw new Error(data.error || "提交失败");
       }
 
       // 6. 提交成功，记录到本地存储
@@ -99,7 +114,7 @@ export default function SuanZhangFullSurvey() {
       // 7. 重置reCAPTCHA
       recaptchaRef.current?.reset();
     } catch (e) {
-      console.error('Error submitting survey:', e);
+      console.error("Error submitting survey:", e);
 
       // 提交失败也重置reCAPTCHA
       recaptchaRef.current?.reset();
@@ -115,21 +130,24 @@ export default function SuanZhangFullSurvey() {
       submitData(newAns);
     }
 
-    setTimeout(() => setStep(prev => prev + 1), 250);
+    setTimeout(() => setStep((prev) => prev + 1), 250);
   };
 
   const handleMulti = (key: string, val: string) => {
     const curr = answers[key] || [];
-    const next = curr.includes(val) ? curr.filter((i: string) => i !== val) : [...curr, val];
+    const next = curr.includes(val)
+      ? curr.filter((i: string) => i !== val)
+      : [...curr, val];
     setAnswers({ ...answers, [key]: next });
   };
 
   const submitMulti = () => {
     if (step === questions.length) submitData(answers);
-    setStep(prev => prev + 1);
+    setStep((prev) => prev + 1);
   };
 
-  if (viewMode === 'dashboard') return <DataDashboard onBack={() => setViewMode('survey')} />;
+  if (viewMode === "dashboard")
+    return <DataDashboard onBack={() => setViewMode("survey")} />;
 
   // Intro
   if (step === 0) {
@@ -137,15 +155,19 @@ export default function SuanZhangFullSurvey() {
       <div className="flex flex-col items-center justify-center min-h-screen bg-stone-950 text-stone-100 p-6 font-sans">
         <div className="max-w-lg w-full space-y-10 animate-in fade-in duration-700">
           <div className="border-l-2 border-red-600 pl-6">
-            <h1 className="text-5xl md:text-6xl font-black text-white mb-2 tracking-tighter">算账</h1>
+            <h1 className="text-5xl md:text-6xl font-black text-white mb-2 tracking-tighter">
+              算账
+            </h1>
             <div className="flex items-center gap-2 text-stone-500 font-mono text-sm uppercase tracking-widest">
-               <Lock size={14} />
-               <span>Reckoning 2025</span>
+              <Lock size={14} />
+              <span>Reckoning 2025</span>
             </div>
           </div>
 
           <div className="space-y-4 text-lg text-stone-400 leading-relaxed">
-            <p><strong>不记录 IP，不记录身份。</strong></p>
+            <p>
+              <strong>不记录 IP，不记录身份。</strong>
+            </p>
             <p>
               我们需要你个人的真实数据（如实发薪资月数），也需要你对周围环境的客观观察。
             </p>
@@ -155,7 +177,7 @@ export default function SuanZhangFullSurvey() {
           </div>
 
           <div className="pt-6 space-y-4">
-             <button
+            <button
               onClick={() => setStep(1)}
               className="w-full py-5 bg-stone-100 text-stone-950 text-xl font-bold hover:bg-white transition-all flex items-center justify-center gap-3"
             >
@@ -163,7 +185,7 @@ export default function SuanZhangFullSurvey() {
             </button>
 
             <button
-              onClick={() => setViewMode('dashboard')}
+              onClick={() => setViewMode("dashboard")}
               className="w-full py-4 border border-stone-800 text-stone-500 hover:text-stone-300 hover:border-stone-600 transition-all flex items-center justify-center gap-2"
             >
               <BarChart3 size={16} /> 直接查看现有数据
@@ -176,15 +198,17 @@ export default function SuanZhangFullSurvey() {
 
   // Result
   if (step > questions.length) {
-    return <SafetyResult
-      onReset={() => {
-        setAnswers({});
-        setStep(0);
-        setSubmitError(null);
-      }}
-      onViewData={() => setViewMode('dashboard')}
-      error={submitError}
-    />;
+    return (
+      <SafetyResult
+        onReset={() => {
+          setAnswers({});
+          setStep(0);
+          setSubmitError(null);
+        }}
+        onViewData={() => setViewMode("dashboard")}
+        error={submitError}
+      />
+    );
   }
 
   // Survey
@@ -201,36 +225,49 @@ export default function SuanZhangFullSurvey() {
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans">
       <div className="w-full h-1 bg-stone-900 sticky top-0 z-50">
-        <div className="h-full bg-red-600 transition-all duration-300" style={{ width: `${progress}%` }} />
+        <div
+          className="h-full bg-red-600 transition-all duration-300"
+          style={{ width: `${progress}%` }}
+        />
       </div>
 
       <div className="flex-1 flex flex-col items-center justify-center p-4 w-full max-w-2xl mx-auto mt-4">
-        <div className="w-full animate-in fade-in slide-in-from-right-8 duration-300" key={step}>
-
+        <div
+          className="w-full animate-in fade-in slide-in-from-right-8 duration-300"
+          key={step}
+        >
           <div className="mb-8 border-b border-stone-800 pb-4">
             <div className="flex items-center gap-2 text-stone-500 font-mono text-xs mb-2">
               <Calculator size={14} />
-              <span>QUESTION 0{step} / 0{questions.length}</span>
+              <span>
+                QUESTION 0{step} / 0{questions.length}
+              </span>
             </div>
-            <h2 className="text-2xl md:text-3xl font-bold mb-3 leading-snug">{q.question}</h2>
+            <h2 className="text-2xl md:text-3xl font-bold mb-3 leading-snug">
+              {q.question}
+            </h2>
             {q.sub && <p className="text-stone-400 text-sm italic">{q.sub}</p>}
           </div>
 
           <div className="space-y-3">
             {/* 单选 */}
-            {q.type === 'choice' && q.options?.map((opt, i) => (
-              <button
-                key={i}
-                onClick={() => handleAnswer(q.id, opt)}
-                className="w-full text-left p-4 rounded border border-stone-800 bg-stone-900/30 hover:bg-stone-100 hover:text-stone-900 hover:border-stone-100 transition-all flex justify-between items-center group"
-              >
-                <span className="text-lg">{opt}</span>
-                <ChevronRight className="opacity-0 group-hover:opacity-100 transition-all" size={18} />
-              </button>
-            ))}
+            {q.type === "choice" &&
+              q.options?.map((opt, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleAnswer(q.id, opt)}
+                  className="w-full text-left p-4 rounded border border-stone-800 bg-stone-900/30 hover:bg-stone-100 hover:text-stone-900 hover:border-stone-100 transition-all flex justify-between items-center group"
+                >
+                  <span className="text-lg">{opt}</span>
+                  <ChevronRight
+                    className="opacity-0 group-hover:opacity-100 transition-all"
+                    size={18}
+                  />
+                </button>
+              ))}
 
             {/* 滑块 (核心功能回归) */}
-            {q.type === 'range' && (
+            {q.type === "range" && (
               <div className="py-8 px-6 bg-stone-900/50 border border-stone-800 rounded text-center">
                 <div className="flex items-end justify-center gap-2 mb-2">
                   <div className="text-7xl font-black text-white font-mono tracking-tighter">
@@ -244,7 +281,9 @@ export default function SuanZhangFullSurvey() {
 
                 <input
                   type="range"
-                  min={q.min} max={q.max} step={q.step}
+                  min={q.min}
+                  max={q.max}
+                  step={q.step}
                   defaultValue={12}
                   onChange={(e) => setCurrentSelection(e.target.value)}
                   className="w-full h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-red-600 hover:accent-red-500"
@@ -260,7 +299,7 @@ export default function SuanZhangFullSurvey() {
             )}
 
             {/* 多选 */}
-            {q.type === 'multi' && (
+            {q.type === "multi" && (
               <>
                 {q.options?.map((opt, i) => {
                   const active = (answers[q.id] || []).includes(opt);
@@ -270,8 +309,8 @@ export default function SuanZhangFullSurvey() {
                       onClick={() => handleMulti(q.id, opt)}
                       className={`w-full text-left p-4 rounded border transition-all flex justify-between items-center ${
                         active
-                          ? 'border-red-600 bg-stone-900 text-red-500'
-                          : 'border-stone-800 text-stone-400 hover:bg-stone-900 hover:text-stone-200'
+                          ? "border-red-600 bg-stone-900 text-red-500"
+                          : "border-stone-800 text-stone-400 hover:bg-stone-900 hover:text-stone-200"
                       }`}
                     >
                       <span>{opt}</span>
@@ -284,7 +323,9 @@ export default function SuanZhangFullSurvey() {
                 <div className="flex justify-center mt-6">
                   <ReCAPTCHA
                     ref={recaptchaRef}
-                    sitekey={process.env['NEXT_PUBLIC_RECAPTCHA_SITE_KEY'] || ''}
+                    sitekey={
+                      process.env["NEXT_PUBLIC_RECAPTCHA_SITE_KEY"] || ""
+                    }
                     size="normal"
                     theme="dark"
                   />
@@ -306,7 +347,6 @@ export default function SuanZhangFullSurvey() {
               <ShieldCheck size={10} /> 此数据仅用于生成匿名统计
             </p>
           </div>
-
         </div>
       </div>
     </div>
