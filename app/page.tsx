@@ -1,15 +1,17 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ArrowRight, Lock, ShieldCheck, BarChart3,
   ChevronRight, Check, Calculator
 } from 'lucide-react';
+import ReCAPTCHA from 'react-google-recaptcha';
 import { questions } from '@/lib/questions';
 import DataDashboard from '@/components/DataDashboard';
 import SafetyResult from '@/components/SafetyResult';
-import { canSubmit, recordSubmission, generateSubmitToken } from '@/lib/client-rate-limit';
+import { canSubmit, recordSubmission } from '@/lib/client-rate-limit';
 import { initBehaviorTracking, validateHumanBehavior, getBehaviorData } from '@/lib/bot-detection';
+import { generateEncryptedToken } from '@/lib/client-token-crypto';
 
 export default function SuanZhangFullSurvey() {
   const [step, setStep] = useState(0);
@@ -17,6 +19,7 @@ export default function SuanZhangFullSurvey() {
   const [viewMode, setViewMode] = useState<'survey' | 'dashboard'>('survey');
   const [currentSelection, setCurrentSelection] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const recaptchaRef = useRef<ReCAPTCHA>(null);
 
   // 初始化行为追踪
   useEffect(() => {
@@ -39,13 +42,29 @@ export default function SuanZhangFullSurvey() {
         return;
       }
 
-      // 3. 生成提交 token
-      const submitToken = generateSubmitToken();
+      // 3. 获取reCAPTCHA token
+      const recaptchaToken = await recaptchaRef.current?.executeAsync();
+      if (!recaptchaToken) {
+        setSubmitError('请完成人机验证');
+        return;
+      }
 
-      // 4. 获取行为数据
+      // 4. 生成加密token（基于问卷数据 + 客户端时间戳）
+      const clientTimestamp = Date.now();
+      const submitToken = await generateEncryptedToken({
+        industry: finalAnswers['industry'],
+        salary_months: finalAnswers['salary_months'],
+        personal_income: finalAnswers['personal_income'],
+        friends_status: finalAnswers['friends_status'],
+        personal_arrears: finalAnswers['personal_arrears'],
+        friends_arrears_perception: finalAnswers['friends_arrears_perception'],
+        welfare_cut: finalAnswers['welfare_cut']
+      }, clientTimestamp);
+
+      // 5. 获取行为数据
       const behaviorData = getBehaviorData();
 
-      // 5. 发送请求
+      // 6. 发送请求
       const response = await fetch('/api/survey/submit', {
         method: 'POST',
         headers: {
@@ -54,7 +73,8 @@ export default function SuanZhangFullSurvey() {
         body: JSON.stringify({
           ...finalAnswers,
           submitToken,
-          behaviorData
+          behaviorData,
+          recaptchaToken
         }),
       });
 
@@ -75,8 +95,14 @@ export default function SuanZhangFullSurvey() {
       // 6. 提交成功，记录到本地存储
       recordSubmission();
       setSubmitError(null);
+
+      // 7. 重置reCAPTCHA
+      recaptchaRef.current?.reset();
     } catch (e) {
       console.error('Error submitting survey:', e);
+
+      // 提交失败也重置reCAPTCHA
+      recaptchaRef.current?.reset();
     }
   };
 
@@ -253,6 +279,17 @@ export default function SuanZhangFullSurvey() {
                     </button>
                   );
                 })}
+
+                {/* reCAPTCHA */}
+                <div className="flex justify-center mt-6">
+                  <ReCAPTCHA
+                    ref={recaptchaRef}
+                    sitekey={process.env['NEXT_PUBLIC_RECAPTCHA_SITE_KEY'] || ''}
+                    size="normal"
+                    theme="dark"
+                  />
+                </div>
+
                 <button
                   onClick={submitMulti}
                   className="w-full py-4 bg-stone-100 text-stone-900 font-bold mt-6 hover:bg-white rounded disabled:opacity-50"

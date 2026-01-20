@@ -86,3 +86,28 @@ BEGIN
   WHERE window_start < NOW() - INTERVAL '1 hour';
 END;
 $$ LANGUAGE plpgsql;
+-- 创建已使用token表（防止token重放攻击）
+CREATE TABLE IF NOT EXISTS used_tokens (
+  id SERIAL PRIMARY KEY,
+  token VARCHAR(100) NOT NULL UNIQUE,
+  used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP NOT NULL
+);
+
+-- 创建索引以提高查询性能
+CREATE INDEX IF NOT EXISTS idx_used_tokens_token ON used_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_used_tokens_expires ON used_tokens(expires_at);
+
+-- 创建自动清理过期token的函数
+CREATE OR REPLACE FUNCTION cleanup_expired_tokens()
+RETURNS void AS $$
+BEGIN
+  DELETE FROM used_tokens
+  WHERE expires_at < NOW();
+END;
+$$ LANGUAGE plpgsql;
+
+-- 注意：不添加submission_hash字段
+-- 原因：不同用户可能填写完全相同的答案，内容去重会误伤正常用户
+-- Token一次性使用机制已经足够防止重放攻击
+

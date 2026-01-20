@@ -17,6 +17,9 @@ export const RATE_LIMIT_CONFIG = {
   STORAGE_KEY: "survey_submissions", // localStorage key
 };
 
+// Token有效期（2分钟）
+const TOKEN_VALIDITY = 2 * 60 * 1000;
+
 // 全局速率限制配置
 const GLOBAL_LIMIT = 1000; // 每分钟全局最多 1000 个请求
 const GLOBAL_WINDOW_SECONDS = 60; // 1 分钟窗口
@@ -85,10 +88,10 @@ export function generateSubmitToken(): string {
 }
 
 /**
- * 验证提交 token 是否有效
- * 只检查 token 格式和时间，不记录任何信息
+ * 验证提交 token 格式是否有效
+ * 只检查 token 格式和时间，不检查是否已使用
  */
-export function validateSubmitToken(token: string): boolean {
+export function validateSubmitTokenFormat(token: string): boolean {
   if (!token) return false;
 
   const parts = token.split("-");
@@ -100,13 +103,58 @@ export function validateSubmitToken(token: string): boolean {
   // Token 有效期 2 分钟（缩短以减少重放攻击风险）
   const now = Date.now();
   const tokenAge = now - timestamp;
-  const TOKEN_VALIDITY = 2 * 60 * 1000; // 2 分钟
 
   if (tokenAge < 0 || tokenAge > TOKEN_VALIDITY) {
     return false;
   }
 
   return true;
+}
+
+/**
+ * 检查并标记token为已使用（防止重放攻击）
+ * 返回true表示token有效且未使用，返回false表示token已被使用或无效
+ */
+export async function validateAndConsumeToken(token: string): Promise<boolean> {
+  // 1. 先检查格式
+  if (!validateSubmitTokenFormat(token)) {
+    return false;
+  }
+
+  try {
+    // 2. 检查token是否已被使用
+    const existing = await sql`
+      SELECT token FROM used_tokens
+      WHERE token = ${token}
+      LIMIT 1
+    `;
+
+    if (existing.length > 0) {
+      console.warn('[Token Reuse] Token已被使用:', token);
+      return false;
+    }
+
+    // 3. 标记token为已使用
+    const timestamp = parseInt(token.split('-')[0] || '0');
+    const expiresAt = new Date(timestamp + TOKEN_VALIDITY);
+
+    await sql`
+      INSERT INTO used_tokens (token, expires_at)
+      VALUES (${token}, ${expiresAt.toISOString()})
+      ON CONFLICT (token) DO NOTHING
+    `;
+
+    // 4. 清理过期token（异步，不阻塞）
+    sql`DELETE FROM used_tokens WHERE expires_at < NOW()`.catch(err => {
+      console.error('[Token Cleanup Error]', err);
+    });
+
+    return true;
+  } catch (error) {
+    console.error('[Token Validation Error]', error);
+    // 数据库错误时拒绝请求（安全优先）
+    return false;
+  }
 }
 
 /**

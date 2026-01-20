@@ -143,7 +143,8 @@ export function validateSurveyData(data: unknown): ValidationResult {
     ...requiredFields,
     'welfare_cut',
     'submitToken', // 允许提交 token
-    'behaviorData' // 允许行为数据
+    'behaviorData', // 允许行为数据
+    'recaptchaToken' // 允许reCAPTCHA token
   ];
 
   for (const key of Object.keys(surveyData)) {

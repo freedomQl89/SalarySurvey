@@ -31,14 +31,15 @@ export function middleware(request: NextRequest) {
   const csp = [
     "default-src 'self'",
     process.env.NODE_ENV === "development"
-      ? `script-src 'self' 'unsafe-inline' 'unsafe-eval'` // 开发环境需要这些用于HMR
-      : `script-src 'self' 'unsafe-inline'`, // 生产环境Next.js需要unsafe-inline
+      ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com https://www.gstatic.com` // 开发环境 + reCAPTCHA
+      : `script-src 'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com`, // 生产环境 + reCAPTCHA
     `style-src 'self' 'unsafe-inline'`, // React需要unsafe-inline用于内联样式
     "img-src 'self' data: https:",
     "font-src 'self' data:",
     process.env.NODE_ENV === "development"
-      ? "connect-src 'self' ws: wss:" // 开发环境WebSocket
-      : "connect-src 'self'",
+      ? "connect-src 'self' ws: wss: https://www.google.com" // 开发环境WebSocket + reCAPTCHA
+      : "connect-src 'self' https://www.google.com",
+    "frame-src https://www.google.com", // reCAPTCHA iframe
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",

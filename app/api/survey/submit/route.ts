@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { checkGlobalRateLimit, validateSubmitToken } from '@/lib/rate-limit';
+import { checkGlobalRateLimit, validateAndConsumeToken } from '@/lib/rate-limit';
 import { validateSurveyData } from '@/lib/validation';
 import { validateCSRF } from '@/lib/csrf-protection';
+import { validateEncryptedToken } from '@/lib/token-crypto';
+import { verifyRecaptcha } from '@/lib/recaptcha';
 
 export async function POST(request: NextRequest) {
   try {
@@ -74,10 +76,47 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const { submitToken, behaviorData } = body;
+    const { submitToken, behaviorData, recaptchaToken } = body;
 
-    // 5. 验证提交 token（防止脚本刷新）
-    if (!validateSubmitToken(submitToken)) {
+    // 5. 验证reCAPTCHA（防止机器人）
+    const recaptchaResult = await verifyRecaptcha(recaptchaToken);
+    if (!recaptchaResult.success) {
+      return NextResponse.json(
+        {
+          error: 'reCAPTCHA验证失败',
+          message: recaptchaResult.error || '请完成人机验证'
+        },
+        { status: 400 }
+      );
+    }
+
+    // 6. 验证加密token（防止篡改和重放攻击）
+    // 5.1. 首先验证token是否由问卷数据加密生成（防止篡改）
+    const tokenValidation = validateEncryptedToken(submitToken, {
+      industry: body.industry,
+      salary_months: body.salary_months,
+      personal_income: body.personal_income,
+      friends_status: body.friends_status,
+      personal_arrears: body.personal_arrears,
+      friends_arrears_perception: body.friends_arrears_perception,
+      welfare_cut: body.welfare_cut
+    });
+
+    if (!tokenValidation.valid) {
+      console.warn('[Token Validation Failed]', tokenValidation.reason);
+      return NextResponse.json(
+        {
+          error: '无效的提交请求',
+          message: '请刷新页面后重试',
+          debug: process.env.NODE_ENV === 'development' ? tokenValidation.reason : undefined
+        },
+        { status: 400 }
+      );
+    }
+
+    // 5.2. 然后检查token是否已被使用（防止重放攻击）
+    const tokenConsumed = await validateAndConsumeToken(submitToken);
+    if (!tokenConsumed) {
       return NextResponse.json(
         {
           error: '无效的提交请求',
@@ -207,6 +246,10 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    // 注意：不检测提交内容是否重复
+    // 原因：不同用户可能填写完全相同的答案（如都是"互联网/大厂，2个月，温和下跌"）
+    // Token一次性使用机制已经足够防止同一用户的重放攻击
 
     // 10. 插入数据到数据库（使用参数化查询，防止 SQL 注入，带超时保护）
     try {
