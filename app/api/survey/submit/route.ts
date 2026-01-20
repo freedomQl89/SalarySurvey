@@ -103,13 +103,14 @@ export async function POST(request: NextRequest) {
         touchEvents = 0,
         startTime = 0,
         scrolls = 0,
-        keyPresses = 0
+        keyPresses = 0,
+        lastActivity = 0
       } = behaviorData;
 
       // 验证所有字段都是数字且在合理范围内
-      const fields = { mouseMovements, clicks, touchEvents, startTime, scrolls, keyPresses };
+      const fields = { mouseMovements, clicks, touchEvents, startTime, scrolls, keyPresses, lastActivity };
       for (const [, value] of Object.entries(fields)) {
-        if (typeof value !== 'number' || value < 0 || value > 1000000) {
+        if (typeof value !== 'number' || value < 0 || !Number.isFinite(value)) {
           return NextResponse.json(
             { error: '行为数据包含无效值' },
             { status: 400 }
