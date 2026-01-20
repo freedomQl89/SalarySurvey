@@ -1,14 +1,67 @@
 'use client';
 
 import React from 'react';
-import { ShieldCheck, CheckCircle2, EyeOff, BarChart3 } from 'lucide-react';
+import { ShieldCheck, CheckCircle2, EyeOff, BarChart3, AlertTriangle } from 'lucide-react';
 
 interface SafetyResultProps {
   onReset: () => void;
   onViewData: () => void;
+  error?: string | null;
 }
 
-export default function SafetyResult({ onReset, onViewData }: SafetyResultProps) {
+export default function SafetyResult({ onReset, onViewData, error }: SafetyResultProps) {
+  // 如果有错误，显示错误页面
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-stone-950 text-stone-100 font-sans animate-in fade-in">
+        <div className="max-w-md w-full text-center space-y-8">
+
+          <div className="flex justify-center mb-6">
+            <div className="w-20 h-20 bg-red-900/20 rounded-full flex items-center justify-center border border-red-800 text-red-500">
+              <AlertTriangle size={40} />
+            </div>
+          </div>
+
+          <div>
+            <h1 className="text-2xl font-bold text-white mb-2">提交失败</h1>
+            <p className="text-stone-400 text-sm">
+              {error}
+            </p>
+          </div>
+
+          <div className="bg-stone-900 p-6 rounded text-left border border-stone-800">
+            <div className="text-sm text-stone-300 space-y-2">
+              <p className="text-stone-500 text-xs mb-2">可能的原因：</p>
+              <ul className="list-disc list-inside space-y-1 text-stone-400">
+                <li>提交过于频繁（每小时最多 3 次）</li>
+                <li>网络连接问题</li>
+                <li>服务器暂时不可用</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="pt-8 space-y-4">
+            <button
+              onClick={onReset}
+              className="w-full py-4 bg-stone-100 text-stone-950 font-bold hover:bg-white transition-all rounded shadow-lg shadow-white/5"
+            >
+              返回重试
+            </button>
+
+            <button
+              onClick={onViewData}
+              className="w-full py-4 border border-stone-800 text-stone-500 hover:text-stone-300 hover:border-stone-600 transition-all flex items-center justify-center gap-2"
+            >
+              <BarChart3 size={16} /> 查看现有数据
+            </button>
+          </div>
+
+        </div>
+      </div>
+    );
+  }
+
+  // 正常的成功页面
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-stone-950 text-stone-100 font-sans animate-in fade-in">
       <div className="max-w-md w-full text-center space-y-8">

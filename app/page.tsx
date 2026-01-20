@@ -5,40 +5,79 @@ import {
   ArrowRight, Lock, ShieldCheck, BarChart3,
   ChevronRight, Check, Calculator
 } from 'lucide-react';
-import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc } from 'firebase/firestore';
-import { auth, db, appId, COLLECTION_NAME } from '@/lib/firebase';
-import { questions, Question } from '@/lib/questions';
+import { questions } from '@/lib/questions';
 import DataDashboard from '@/components/DataDashboard';
 import SafetyResult from '@/components/SafetyResult';
+import { canSubmit, recordSubmission, generateSubmitToken } from '@/lib/client-rate-limit';
+import { initBehaviorTracking, validateHumanBehavior, getBehaviorData } from '@/lib/bot-detection';
 
 export default function SuanZhangFullSurvey() {
-  const [user, setUser] = useState<User | null>(null);
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [viewMode, setViewMode] = useState<'survey' | 'dashboard'>('survey');
   const [currentSelection, setCurrentSelection] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // 初始化行为追踪
   useEffect(() => {
-    // 匿名登录
-    const init = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (e) { console.error(e); }
-    };
-    init();
-    return onAuthStateChanged(auth, setUser);
+    initBehaviorTracking();
   }, []);
 
   const submitData = async (finalAnswers: Record<string, any>) => {
-    if (!user) return;
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME), {
-        ...finalAnswers,
-        uid: 'ANON_' + Math.random().toString(36).substr(2, 9), // 仅存随机伪ID
-        timestamp: new Date().toISOString(),
+      // 1. 检查客户端速率限制
+      const rateLimitCheck = canSubmit();
+      if (!rateLimitCheck.allowed) {
+        setSubmitError(rateLimitCheck.message || '提交过于频繁，请稍后再试');
+        return;
+      }
+
+      // 2. 验证人类行为
+      const behaviorCheck = validateHumanBehavior();
+      if (!behaviorCheck.isHuman) {
+        setSubmitError(`检测到异常行为：${behaviorCheck.reason}，请正常填写问卷`);
+        return;
+      }
+
+      // 3. 生成提交 token
+      const submitToken = generateSubmitToken();
+
+      // 4. 获取行为数据
+      const behaviorData = getBehaviorData();
+
+      // 5. 发送请求
+      const response = await fetch('/api/survey/submit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...finalAnswers,
+          submitToken,
+          behaviorData
+        }),
       });
-    } catch (e) { console.error(e); }
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        // 处理错误
+        if (response.status === 429 || response.status === 503) {
+          setSubmitError(data.message || '提交过于频繁，请稍后再试');
+        } else if (response.status === 403 && data.error?.includes('行为')) {
+          setSubmitError(data.error || '检测到异常行为');
+        } else {
+          setSubmitError(data.error || '提交失败，请稍后重试');
+        }
+        throw new Error(data.error || '提交失败');
+      }
+
+      // 6. 提交成功，记录到本地存储
+      recordSubmission();
+      setSubmitError(null);
+    } catch (e) {
+      console.error('Error submitting survey:', e);
+    }
   };
 
   const handleAnswer = (key: string, value: any) => {
@@ -111,11 +150,26 @@ export default function SuanZhangFullSurvey() {
 
   // Result
   if (step > questions.length) {
-    return <SafetyResult onReset={() => { setAnswers({}); setStep(0); }} onViewData={() => setViewMode('dashboard')} />;
+    return <SafetyResult
+      onReset={() => {
+        setAnswers({});
+        setStep(0);
+        setSubmitError(null);
+      }}
+      onViewData={() => setViewMode('dashboard')}
+      error={submitError}
+    />;
   }
 
   // Survey
   const q = questions[step - 1];
+
+  // 安全检查：如果问题不存在，返回到首页
+  if (!q) {
+    setStep(0);
+    return null;
+  }
+
   const progress = (step / questions.length) * 100;
 
   return (
