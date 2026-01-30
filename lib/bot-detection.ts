@@ -1,9 +1,15 @@
 /**
  * 反机器人检测
  * 通过用户行为特征判断是否为真实用户
+ *
+ * 注意：行为数据仅存储在内存中，不持久化到 localStorage
+ * 原因：
+ * 1. 安全性：防止攻击者修改本地存储伪造行为数据
+ * 2. 隐私性：不在本地存储用户行为数据
+ * 3. 准确性：每次访问都是新的会话，确保数据真实性
  */
 
-const STORAGE_KEY = 'user_behavior';
+import { isMobileDevice } from './user-agent-utils';
 
 interface BehaviorData {
   mouseMovements: number;
@@ -80,7 +86,7 @@ export function validateHumanBehavior(): {
 } {
   const now = Date.now();
   const timeSpent = (now - behaviorData.startTime) / 1000; // 秒
-  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const isMobile = isMobileDevice();
 
   let score = 0;
   const reasons: string[] = [];

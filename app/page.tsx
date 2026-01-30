@@ -29,14 +29,55 @@ export default function SuanZhangFullSurvey() {
   const [currentSelection, setCurrentSelection] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRecaptchaReady, setIsRecaptchaReady] = useState(false);
   const recaptchaRef = useRef<ReCAPTCHA>(null);
+  // 使用 ref 跟踪提交状态，防止竞态条件
+  const isSubmittingRef = useRef(false);
 
   // 初始化行为追踪
   useEffect(() => {
     initBehaviorTracking();
   }, []);
 
+  // 监听步骤变化，重置 ReCAPTCHA 状态
+  useEffect(() => {
+    // 如果不是最后一题，重置 ReCAPTCHA 准备状态
+    if (step !== questions.length) {
+      setIsRecaptchaReady(false);
+    } else {
+      // 到达最后一题时，延迟检查 reCAPTCHA 是否已加载
+      // 因为 onLoad 回调可能不可靠
+      let attempts = 0;
+      const maxAttempts = 20; // 最多等待 10 秒（20 * 500ms）
+
+      const checkRecaptcha = () => {
+        attempts++;
+
+        if (recaptchaRef.current) {
+          setIsRecaptchaReady(true);
+        } else if (attempts >= maxAttempts) {
+          // 超时后强制设置为准备好，避免用户无法提交
+          setIsRecaptchaReady(true);
+          setSubmitError("人机验证加载较慢，如提交失败请刷新页面重试");
+        } else {
+          // 继续等待
+          setTimeout(checkRecaptcha, 500);
+        }
+      };
+
+      setTimeout(checkRecaptcha, 100);
+    }
+  }, [step]);
+
   const submitData = async (finalAnswers: Record<string, any>) => {
+    // 防止竞态条件：检查是否已经在提交中
+    if (isSubmittingRef.current) {
+      console.warn('[Submit] 已有提交正在进行中，忽略重复提交');
+      return false;
+    }
+
+    // 立即设置 ref（同步），防止快速重复点击
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
     setSubmitError(null);
 
@@ -45,29 +86,91 @@ export default function SuanZhangFullSurvey() {
       const rateLimitCheck = canSubmit();
       if (!rateLimitCheck.allowed) {
         setSubmitError(rateLimitCheck.message || "提交过于频繁，请稍后再试");
+        isSubmittingRef.current = false;
         setIsSubmitting(false);
         return false;
       }
 
-      // 2. 验证人类行为
+      // 2. 验证答案完整性
+      const requiredFields = questions.map(q => q.id);
+      const missingFields = requiredFields.filter(field => {
+        const value = finalAnswers[field];
+        return value === undefined || value === null || value === '';
+      });
+
+      if (missingFields.length > 0) {
+        setSubmitError(`请完成所有问题：缺少 ${missingFields.join(', ')}`);
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
+        return false;
+      }
+
+      // 3. 验证答案有效性（选项是否匹配）
+      for (const q of questions) {
+        const value = finalAnswers[q.id];
+
+        if (q.type === 'choice' && q.options) {
+          if (!q.options.includes(value)) {
+            setSubmitError(`无效的答案：${q.id}`);
+            isSubmittingRef.current = false;
+            setIsSubmitting(false);
+            return false;
+          }
+        } else if (q.type === 'multi' && q.options) {
+          if (!Array.isArray(value) || value.length === 0) {
+            setSubmitError(`请至少选择一项：${q.id}`);
+            isSubmittingRef.current = false;
+            setIsSubmitting(false);
+            return false;
+          }
+          for (const item of value) {
+            if (!q.options.includes(item)) {
+              setSubmitError(`无效的选项：${q.id}`);
+              isSubmittingRef.current = false;
+              setIsSubmitting(false);
+              return false;
+            }
+          }
+        } else if (q.type === 'range') {
+          const numValue = Number(value);
+          if (isNaN(numValue) || numValue < (q.min || 0) || numValue > (q.max || 100)) {
+            setSubmitError(`数值超出范围：${q.id}`);
+            isSubmittingRef.current = false;
+            setIsSubmitting(false);
+            return false;
+          }
+        }
+      }
+
+      // 4. 验证人类行为
       const behaviorCheck = validateHumanBehavior();
       if (!behaviorCheck.isHuman) {
         setSubmitError(
           `检测到异常行为：${behaviorCheck.reason}，请正常填写问卷`,
         );
+        isSubmittingRef.current = false;
         setIsSubmitting(false);
         return false;
       }
 
-      // 3. 获取reCAPTCHA token
-      const recaptchaToken = recaptchaRef.current?.getValue();
+      // 5. 获取reCAPTCHA token
+      // 检查 reCAPTCHA 组件是否已挂载
+      if (!recaptchaRef.current) {
+        setSubmitError("人机验证组件未加载，请刷新页面重试");
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
+        return false;
+      }
+
+      const recaptchaToken = recaptchaRef.current.getValue();
       if (!recaptchaToken) {
         setSubmitError("请完成人机验证");
+        isSubmittingRef.current = false;
         setIsSubmitting(false);
         return false;
       }
 
-      // 4. 生成加密token（基于问卷数据 + 客户端时间戳）
+      // 6. 生成加密token（基于问卷数据 + 客户端时间戳）
       const clientTimestamp = Date.now();
       const submitToken = await generateEncryptedToken(
         {
@@ -83,10 +186,10 @@ export default function SuanZhangFullSurvey() {
         clientTimestamp,
       );
 
-      // 5. 获取行为数据
+      // 7. 获取行为数据
       const behaviorData = getBehaviorData();
 
-      // 6. 发送请求
+      // 8. 发送请求
       const response = await fetch("/api/survey/submit", {
         method: "POST",
         headers: {
@@ -111,24 +214,27 @@ export default function SuanZhangFullSurvey() {
         } else {
           setSubmitError(data.error || "提交失败，请稍后重试");
         }
+        isSubmittingRef.current = false;
         setIsSubmitting(false);
         recaptchaRef.current?.reset();
         return false;
       }
 
-      // 7. 提交成功，记录到本地存储
+      // 9. 提交成功，记录到本地存储
       recordSubmission();
       setSubmitError(null);
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
 
-      // 8. 重置reCAPTCHA
+      // 10. 重置reCAPTCHA
       recaptchaRef.current?.reset();
 
-      // 9. 返回成功标志
+      // 11. 返回成功标志
       return true;
     } catch (e) {
       console.error("Error submitting survey:", e);
       setSubmitError("提交失败，请稍后重试");
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
 
       // 提交失败也重置reCAPTCHA
@@ -138,11 +244,19 @@ export default function SuanZhangFullSurvey() {
   };
 
   const handleAnswer = async (key: string, value: any) => {
+    // 防止在提交过程中重复点击
+    if (isSubmittingRef.current) {
+      console.warn('[handleAnswer] 提交中，忽略点击');
+      return;
+    }
+
     const newAns = { ...answers, [key]: value };
     setAnswers(newAns);
     setCurrentSelection(null);
 
     // 如果是最后一题，先提交数据
+    // step从1开始计数，questions.length是题目总数
+    // 当step === questions.length时，表示正在回答最后一题（questions[step-1]即questions[questions.length-1]）
     if (step === questions.length) {
       const success = await submitData(newAns);
       // 只有提交成功才跳转到结果页
@@ -164,8 +278,17 @@ export default function SuanZhangFullSurvey() {
   };
 
   const submitMulti = async () => {
+    // 防止在提交过程中重复点击
+    if (isSubmittingRef.current) {
+      console.warn('[submitMulti] 提交中，忽略点击');
+      return;
+    }
+
     // 如果是最后一题，先提交数据
+    // step从1开始计数，questions.length是题目总数
+    // 当step === questions.length时，表示正在回答最后一题（questions[step-1]即questions[questions.length-1]）
     if (step === questions.length) {
+      // submitData 内部会设置 isSubmittingRef，不需要在这里提前设置
       const success = await submitData(answers);
       // 只有提交成功才跳转到结果页
       if (success) {
@@ -359,15 +482,44 @@ export default function SuanZhangFullSurvey() {
                     }
                     size="normal"
                     theme="dark"
+                    onLoad={() => {
+                      setIsRecaptchaReady(true);
+                    }}
+                    onErrored={() => {
+                      setIsRecaptchaReady(false);
+                      setSubmitError("人机验证加载失败，请刷新页面重试");
+                    }}
+                    onExpired={() => {
+                      setSubmitError("人机验证已过期，请重新验证");
+                    }}
                   />
                 </div>
+
+                {/* 调试信息（仅开发环境） */}
+                {process.env.NODE_ENV === 'development' && (
+                  <div className="mt-2 text-xs text-stone-600">
+                    reCAPTCHA 状态: {isRecaptchaReady ? '✓ 已加载' : '⏳ 加载中...'}
+                    {!process.env["NEXT_PUBLIC_RECAPTCHA_SITE_KEY"] && (
+                      <span className="text-red-500"> | ⚠️ 缺少 SITE_KEY</span>
+                    )}
+                  </div>
+                )}
 
                 <button
                   onClick={submitMulti}
                   className="w-full py-4 bg-stone-100 text-stone-900 font-bold mt-6 hover:bg-white rounded disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                  disabled={!answers[q.id] || answers[q.id].length === 0 || isSubmitting}
+                  disabled={
+                    !answers[q.id] ||
+                    answers[q.id].length === 0 ||
+                    isSubmitting ||
+                    !isRecaptchaReady
+                  }
                 >
-                  {isSubmitting ? "提交中..." : "确认提交"}
+                  {isSubmitting
+                    ? "提交中..."
+                    : !isRecaptchaReady
+                    ? "加载人机验证中..."
+                    : "确认提交"}
                 </button>
 
                 {/* 显示提交错误 */}

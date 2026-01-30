@@ -4,6 +4,9 @@ const nextConfig: NextConfig = {
   // 生产环境优化
   poweredByHeader: false, // 隐藏 X-Powered-By 头，避免暴露技术栈
 
+  // 禁用生产环境 source maps，防止源代码泄露
+  productionBrowserSourceMaps: false,
+
   // 压缩
   compress: true,
 

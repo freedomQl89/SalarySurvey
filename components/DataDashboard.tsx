@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { ShieldCheck, FileWarning, Users, AlertTriangle } from "lucide-react";
 import {
   BarChart,
@@ -41,14 +41,15 @@ interface StatsData {
 export default function DataDashboard({ onBack }: DataDashboardProps) {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastFetch, setLastFetch] = useState<number>(0);
+  // 使用 ref 存储上次请求时间，避免触发重新渲染和依赖循环
+  const lastFetchRef = useRef<number>(0);
 
   useEffect(() => {
     // 从 API 获取聚合数据
     const fetchData = async () => {
       // 防抖：如果距离上次请求不到 5 秒，跳过
       const now = Date.now();
-      if (now - lastFetch < 5000) {
+      if (now - lastFetchRef.current < 5000) {
         return;
       }
 
@@ -61,7 +62,7 @@ export default function DataDashboard({ onBack }: DataDashboardProps) {
         const result = await response.json();
         if (result.success) {
           setStats(result.stats);
-          setLastFetch(now);
+          lastFetchRef.current = now;
         }
       } catch (error) {
         console.error("Error fetching data:", error);
@@ -75,7 +76,7 @@ export default function DataDashboard({ onBack }: DataDashboardProps) {
     // 每 60 秒刷新一次数据（降低刷新频率）
     const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
-  }, [lastFetch]);
+  }, []); // 空依赖数组，effect 只在组件挂载时执行一次
 
   // 1. 关键指标（直接使用 API 返回的数据）
   const metrics = useMemo(() => {

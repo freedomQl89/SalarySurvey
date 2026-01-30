@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { checkGlobalRateLimit } from "@/lib/rate-limit";
 
-// 启用缓存，每 30 秒重新验证一次
-export const revalidate = 30;
+// 禁用 Next.js 缓存，因为 aggregated_stats 表由触发器实时维护
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
@@ -18,7 +18,7 @@ export async function GET() {
         { status: 429 },
       );
     }
-    // 使用数据库聚合查询，只返回统计结果（防止数据泄露），带超时保护
+    // 从预计算的 aggregated_stats 表读取数据（触发器自动维护）
     const dbTimeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error("Database timeout")), 10000); // 10秒超时
     });
@@ -26,25 +26,26 @@ export async function GET() {
     const stats = (await Promise.race([
       sql`
         SELECT
-          COUNT(*) as total,
-          COALESCE(AVG(CAST(salary_months AS DECIMAL)), 0) as avg_months,
-          COUNT(*) FILTER (WHERE personal_income = '逆势增长 (涨幅 > 10%)') as income_growth,
-          COUNT(*) FILTER (WHERE personal_income = '基本持平 (波动 < 10%)') as income_stable,
-          COUNT(*) FILTER (WHERE personal_income IN ('温和下跌 (跌幅 10%-30%)', '严重下跌 (跌幅 > 30%)', '腰斩/失业归零')) as income_decline,
-          COUNT(*) FILTER (WHERE friends_status = '普遍在涨薪/跳槽，行情不错') as friends_better,
-          COUNT(*) FILTER (WHERE friends_status = '只有极个别能力强的在涨，大部分苟着') as friends_mixed,
-          COUNT(*) FILTER (WHERE friends_status IN ('大家都在降薪/被裁，怨气很重', '都在谈论维权/讨薪，情况恶劣')) as friends_worse,
-          COUNT(*) FILTER (WHERE personal_arrears IN ('从未欠薪，按时发放', '偶尔延迟，最终发了')) as arrears_safe,
-          COUNT(*) FILTER (WHERE personal_arrears IN ('正在被拖欠 (3个月以内)', '正在被拖欠 (半年以上/无望)')) as arrears_risk
-        FROM survey_responses
+          total_responses as total,
+          avg_salary_months as avg_months,
+          income_growth,
+          income_stable,
+          income_decline,
+          friends_better,
+          friends_mixed,
+          friends_worse,
+          arrears_safe,
+          arrears_risk
+        FROM aggregated_stats
+        WHERE id = 1
       `,
       dbTimeoutPromise,
     ])) as any[];
-
     const result = stats[0];
 
     // 验证查询结果
     if (!result) {
+
       return NextResponse.json(
         {
           error: "数据查询失败",
@@ -78,7 +79,7 @@ export async function GET() {
       },
       {
         headers: {
-          "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
+          "Cache-Control": "no-cache",
           "X-Content-Type-Options": "nosniff",
           "X-Frame-Options": "SAMEORIGIN",
         },
@@ -97,7 +98,6 @@ export async function GET() {
     } else {
       console.error("[Stats API Error]", error);
     }
-
     // 超时错误返回503
     if (errorMessage.includes("timeout")) {
       return NextResponse.json(

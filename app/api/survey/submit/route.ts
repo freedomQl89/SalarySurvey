@@ -5,7 +5,7 @@ import { validateSurveyData } from '@/lib/validation';
 import { validateCSRF } from '@/lib/csrf-protection';
 import { validateEncryptedToken } from '@/lib/token-crypto';
 import { verifyRecaptcha } from '@/lib/recaptcha';
-import { log } from 'console';
+import { isMobileUserAgent } from '@/lib/user-agent-utils';
 
 export async function POST(request: NextRequest) {
   try {
@@ -46,29 +46,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 4. 解析请求体（带超时和错误处理）
+    // 4. 解析请求体（带错误处理）
+    // 注意：不使用 Promise.race 超时，因为它不会取消原操作
+    // Next.js 的 request.json() 已经有内置超时机制
     let body;
     try {
-      // 设置5秒超时，防止慢速攻击
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Request timeout')), 5000);
-      });
-
-      body = await Promise.race([
-        request.json(),
-        timeoutPromise
-      ]);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      if (errorMessage.includes('timeout')) {
-        return NextResponse.json(
-          {
-            error: '请求超时',
-            message: '请求处理时间过长'
-          },
-          { status: 408 }
-        );
-      }
+      body = await request.json();
+    } catch {
       return NextResponse.json(
         {
           error: '无效的请求格式',
@@ -159,10 +143,16 @@ export async function POST(request: NextRequest) {
       }
 
       const timeSpent = startTime ? (Date.now() - startTime) / 1000 : 0;
-      const isMobile = request.headers.get('user-agent')?.match(/Android|iPhone|iPad|iPod/i);
+      const isMobile = isMobileUserAgent(request.headers.get('user-agent'));
 
-      // 检查时间是否合理（不能是未来时间，不能超过1小时）
-      if (timeSpent < 0 || timeSpent > 3600) {
+      // 检查时间是否合理
+      // 1. 不能是未来时间
+      // 2. 不能超过10分钟（正常用户完成问卷需要30秒-5分钟，10分钟已经很宽松）
+      // 3. 与Token有效期（2分钟）保持合理关系，防止长时间保持页面后批量提交
+      const MAX_TIME_WINDOW = 600; // 10分钟（秒）
+      const MIN_TIME_SPENT = 10; // 最少10秒
+
+      if (timeSpent < 0 || timeSpent > MAX_TIME_WINDOW) {
         return NextResponse.json(
           { error: '检测到异常行为：时间数据异常' },
           { status: 403 }
@@ -170,9 +160,21 @@ export async function POST(request: NextRequest) {
       }
 
       // 基本检查：停留时间至少10秒
-      if (timeSpent < 10) {
+      if (timeSpent < MIN_TIME_SPENT) {
         return NextResponse.json(
           { error: '检测到异常行为：停留时间过短，请正常填写问卷' },
+          { status: 403 }
+        );
+      }
+
+      // 检查最后活动时间（防止长时间挂起页面后提交）
+      // lastActivity 应该在最近的合理时间内（比如最近2分钟）
+      const timeSinceLastActivity = lastActivity ? (Date.now() - lastActivity) / 1000 : Infinity;
+      const MAX_IDLE_TIME = 120; // 最后活动距离现在不能超过2分钟
+
+      if (timeSinceLastActivity > MAX_IDLE_TIME) {
+        return NextResponse.json(
+          { error: '检测到异常行为：长时间无活动，请刷新页面重新填写' },
           { status: 403 }
         );
       }
@@ -227,6 +229,7 @@ export async function POST(request: NextRequest) {
     } = body;
 
     // 8. 数据清理和类型转换（防止 SQL 注入和数据污染）
+    // 注意：welfare_cut 已经在 validateSurveyData 中验证为数组，无需再次检查
     const cleanedData = {
       industry: String(industry).trim().substring(0, 100),
       salary_months: parseFloat(String(salary_months)),
@@ -234,7 +237,7 @@ export async function POST(request: NextRequest) {
       friends_status: String(friends_status).trim().substring(0, 100),
       personal_arrears: String(personal_arrears).trim().substring(0, 100),
       friends_arrears_perception: String(friends_arrears_perception).trim().substring(0, 100),
-      welfare_cut: JSON.stringify(Array.isArray(welfare_cut) ? welfare_cut : [])
+      welfare_cut: JSON.stringify(welfare_cut) // 已验证为数组，直接使用
     };
 
     // 9. 最终验证清理后的数据
@@ -252,38 +255,49 @@ export async function POST(request: NextRequest) {
     // 原因：不同用户可能填写完全相同的答案（如都是"互联网/大厂，2个月，温和下跌"）
     // Token一次性使用机制已经足够防止同一用户的重放攻击
 
-    // 10. 插入数据到数据库（使用参数化查询，防止 SQL 注入，带超时保护）
+    // 10. 插入数据到数据库（使用参数化查询，防止 SQL 注入）
+    // 使用 PostgreSQL 的 statement_timeout 而非 Promise.race，确保超时时查询真正被取消
+    let insertResult: Array<Record<string, any>>;
     try {
-      const dbTimeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Database timeout')), 10000); // 10秒超时
-      });
+      // 使用事务并设置语句级超时（10秒），超时后 PostgreSQL 会真正取消查询
+      await sql`BEGIN`;
+      await sql`SET LOCAL statement_timeout = '10s'`;
 
-      await Promise.race([
-        sql`
-          INSERT INTO survey_responses (
-            industry,
-            salary_months,
-            personal_income,
-            friends_status,
-            personal_arrears,
-            friends_arrears_perception,
-            welfare_cut
-          )
-          VALUES (
-            ${cleanedData.industry},
-            ${cleanedData.salary_months},
-            ${cleanedData.personal_income},
-            ${cleanedData.friends_status},
-            ${cleanedData.personal_arrears},
-            ${cleanedData.friends_arrears_perception},
-            ${cleanedData.welfare_cut}
-          )
-        `,
-        dbTimeoutPromise
-      ]);
+      // 使用 RETURNING id 来确认插入成功
+      insertResult = await sql`
+        INSERT INTO survey_responses (
+          industry,
+          salary_months,
+          personal_income,
+          friends_status,
+          personal_arrears,
+          friends_arrears_perception,
+          welfare_cut
+        )
+        VALUES (
+          ${cleanedData.industry},
+          ${cleanedData.salary_months},
+          ${cleanedData.personal_income},
+          ${cleanedData.friends_status},
+          ${cleanedData.personal_arrears},
+          ${cleanedData.friends_arrears_perception},
+          ${cleanedData.welfare_cut}
+        )
+        RETURNING id
+      `;
+
+      await sql`COMMIT`;
     } catch (error) {
+      // 回滚事务
+      try {
+        await sql`ROLLBACK`;
+      } catch (rollbackError) {
+        console.error('[Transaction Rollback Failed]', rollbackError);
+      }
+
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      if (errorMessage.includes('timeout')) {
+      // PostgreSQL 超时错误包含 "canceling statement due to statement timeout"
+      if (errorMessage.includes('timeout') || errorMessage.includes('canceling statement')) {
         return NextResponse.json(
           {
             error: '数据库操作超时',
@@ -293,6 +307,17 @@ export async function POST(request: NextRequest) {
         );
       }
       throw error; // 其他错误继续抛出
+    }
+
+    // 11. 验证插入结果（确保数据真正插入到数据库）
+    // 使用 RETURNING 子句，如果插入成功会返回包含 id 的数组
+    if (!insertResult || insertResult.length !== 1 || !insertResult[0]?.['id']) {
+      console.error('[Database Insert Failed]', {
+        resultLength: insertResult?.length,
+        result: insertResult,
+        message: '数据未成功插入到数据库'
+      });
+      throw new Error('数据插入失败：未返回插入的记录');
     }
 
     // 11. 返回成功响应（带安全头）
@@ -320,7 +345,6 @@ export async function POST(request: NextRequest) {
     } else {
       console.error('[Survey Submit Error]', error);
     }
-    console.log(error)
     return NextResponse.json(
       {
         error: '提交失败',

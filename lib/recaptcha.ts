@@ -14,17 +14,16 @@ export async function verifyRecaptcha(token: string): Promise<{
   success: boolean;
   error?: string;
 }> {
-  // 检查是否配置了密钥
+  // 检查是否配置了密钥（生产环境必须配置）
   if (!RECAPTCHA_SECRET_KEY) {
-    console.error('[reCAPTCHA] RECAPTCHA_SECRET_KEY not configured');
-    // 开发环境允许通过，生产环境拒绝
-    if (process.env.NODE_ENV === 'development') {
-      console.warn('[reCAPTCHA] Development mode: bypassing verification');
-      return { success: true };
-    }
-    return { success: false, error: 'reCAPTCHA未配置' };
+    console.error('[reCAPTCHA] RECAPTCHA_SECRET_KEY not configured - this is a critical security issue');
+    return {
+      success: false,
+      error: 'reCAPTCHA服务未正确配置，请联系管理员'
+    };
   }
 
+  // 验证token是否存在
   if (!token) {
     return { success: false, error: 'reCAPTCHA token缺失' };
   }
@@ -38,23 +37,31 @@ export async function verifyRecaptcha(token: string): Promise<{
       body: `secret=${RECAPTCHA_SECRET_KEY}&response=${token}`,
     });
 
+    if (!response.ok) {
+      console.error('[reCAPTCHA] HTTP error:', response.status);
+      return {
+        success: false,
+        error: 'reCAPTCHA验证服务异常'
+      };
+    }
+
     const data = await response.json();
 
     if (!data.success) {
       console.warn('[reCAPTCHA] Verification failed:', data['error-codes']);
-      return { 
-        success: false, 
-        error: 'reCAPTCHA验证失败' 
+      return {
+        success: false,
+        error: 'reCAPTCHA验证失败，请重试'
       };
     }
 
-    // 检查分数（v2不需要，但保留兼容性）
+    // 验证成功
     return { success: true };
   } catch (error) {
     console.error('[reCAPTCHA] Verification error:', error);
-    return { 
-      success: false, 
-      error: 'reCAPTCHA验证服务异常' 
+    return {
+      success: false,
+      error: 'reCAPTCHA验证服务异常，请稍后重试'
     };
   }
 }

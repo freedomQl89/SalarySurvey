@@ -33,9 +33,9 @@ export function validateCSRF(request: NextRequest): {
 
   // 1. 检查 Origin 头（优先）
   if (origin) {
-    const isAllowed = allowedOrigins.some(
-      (allowed) => origin === allowed || origin.startsWith(allowed),
-    );
+    // 使用精确匹配，防止 startsWith 绕过漏洞
+    // 例如：攻击者可以使用 "https://yoursite.comevil.com" 绕过 startsWith 检查
+    const isAllowed = allowedOrigins.some((allowed) => origin === allowed);
 
     if (!isAllowed) {
       return {
@@ -49,18 +49,29 @@ export function validateCSRF(request: NextRequest): {
 
   // 2. 如果没有 Origin，检查 Referer
   if (referer) {
-    const isAllowed = allowedOrigins.some((allowed) =>
-      referer.startsWith(allowed),
-    );
+    // 从 Referer 中提取 origin（协议 + 域名 + 端口）
+    // 防止 startsWith 绕过漏洞
+    try {
+      const refererUrl = new URL(referer);
+      const refererOrigin = refererUrl.origin; // 例如：https://yoursite.com
 
-    if (!isAllowed) {
+      const isAllowed = allowedOrigins.some((allowed) => refererOrigin === allowed);
+
+      if (!isAllowed) {
+        return {
+          valid: false,
+          reason: `Referer 不匹配: ${referer}`,
+        };
+      }
+
+      return { valid: true };
+    } catch (error) {
+      // Referer 格式无效
       return {
         valid: false,
-        reason: `Referer 不匹配: ${referer}`,
+        reason: `Referer 格式无效: ${referer}`,
       };
     }
-
-    return { valid: true };
   }
 
   // 3. 如果既没有 Origin 也没有 Referer，拒绝请求
@@ -107,20 +118,14 @@ export function requiresCSRFProtection(method: string): boolean {
 }
 
 /**
- * 生成 CSRF 安全的响应头
+ * 注意：CORS 响应头由 middleware.ts 统一管理
+ *
+ * middleware.ts 动态设置 CORS 头：
+ * - 开发环境：允许 localhost 的任意端口
+ * - 生产环境：只允许与 host 匹配的 origin
+ *
+ * 本模块只负责验证请求来源（validateCSRF），不设置响应头
+ * 这样保持了职责分离：
+ * - middleware.ts: 设置全局响应头（包括 CORS）
+ * - csrf-protection.ts: 验证请求来源
  */
-export function getCSRFHeaders(): Record<string, string> {
-  return {
-    // 防止在 iframe 中加载（防止点击劫持）
-    "X-Frame-Options": "DENY",
-
-    "Referrer-Policy": "strict-origin-when-cross-origin",
-
-    // 跨域资源共享策略（仅允许同源）
-    "Access-Control-Allow-Origin":
-      process.env.NODE_ENV === "development" ? "http://localhost:3000" : "",
-
-    // 不允许跨域携带凭证
-    "Access-Control-Allow-Credentials": "false",
-  };
-}

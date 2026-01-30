@@ -14,12 +14,28 @@ export function middleware(request: NextRequest) {
   const origin = request.headers.get("origin");
   const host = request.headers.get("host");
 
+  // CORS 配置：使用精确匹配防止绕过攻击
   if (process.env.NODE_ENV === "development" && origin?.includes("localhost")) {
+    // 开发环境：允许 localhost 的任意端口
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     headers.set("Access-Control-Allow-Headers", "Content-Type");
-  } else if (origin && host && origin.includes(host)) {
-    headers.set("Access-Control-Allow-Origin", origin);
+  } else if (origin && host) {
+    // 生产环境：精确匹配 origin
+    // 防止 includes 绕过：例如 "yoursite.comevil.com".includes("yoursite.com") = true
+    try {
+      const originUrl = new URL(origin);
+      const expectedOrigin = `${originUrl.protocol}//${host}`;
+
+      if (origin === expectedOrigin) {
+        headers.set("Access-Control-Allow-Origin", origin);
+      } else {
+        headers.delete("Access-Control-Allow-Origin");
+      }
+    } catch {
+      // origin 格式无效
+      headers.delete("Access-Control-Allow-Origin");
+    }
   } else {
     headers.delete("Access-Control-Allow-Origin");
   }

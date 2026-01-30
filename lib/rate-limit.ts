@@ -24,23 +24,61 @@ const TOKEN_VALIDITY = 2 * 60 * 1000;
 const GLOBAL_LIMIT = 1000; // 每分钟全局最多 1000 个请求
 const GLOBAL_WINDOW_SECONDS = 60; // 1 分钟窗口
 
+// 清理策略配置
+const CLEANUP_PROBABILITY = 0.01; // 1% 的请求执行清理（每100个请求清理一次）
+let lastCleanupTime = 0; // 上次清理时间
+const MIN_CLEANUP_INTERVAL = 60 * 1000; // 最小清理间隔：1分钟
+
+/**
+ * 异步清理过期记录（不阻塞主流程）
+ * 使用概率清理 + 时间间隔控制，避免频繁执行
+ */
+async function cleanupExpiredRecords() {
+  const now = Date.now();
+
+  // 检查是否需要清理（时间间隔控制）
+  if (now - lastCleanupTime < MIN_CLEANUP_INTERVAL) {
+    return; // 距离上次清理不足1分钟，跳过
+  }
+
+  // 概率清理：只有部分请求执行清理
+  if (Math.random() > CLEANUP_PROBABILITY) {
+    return; // 不在清理概率内，跳过
+  }
+
+  // 更新清理时间（防止并发重复清理）
+  lastCleanupTime = now;
+
+  try {
+    const windowStart = new Date(now - GLOBAL_WINDOW_SECONDS * 1000);
+
+    // 异步执行，不等待结果
+    sql`
+      DELETE FROM rate_limit_global
+      WHERE window_start < ${windowStart}
+    `.catch(err => {
+      console.error('[Rate Limit Cleanup Error]', err);
+    });
+  } catch (error) {
+    console.error('[Rate Limit Cleanup Error]', error);
+  }
+}
+
 /**
  * 检查全局速率限制（防止 DDoS）
  * 使用数据库存储，支持多实例部署和Serverless环境
+ *
+ * 优化策略：
+ * 1. 查询时过滤过期数据（WHERE条件），不依赖DELETE
+ * 2. 使用概率清理 + 时间间隔控制，避免每次请求都DELETE
+ * 3. 清理操作异步执行，不阻塞主流程
  */
 export async function checkGlobalRateLimit(): Promise<boolean> {
   try {
     const now = new Date();
     const windowStart = new Date(now.getTime() - GLOBAL_WINDOW_SECONDS * 1000);
 
-    // 使用事务确保原子性操作
-    // 1. 清理过期记录（超过1分钟的）
-    await sql`
-      DELETE FROM rate_limit_global
-      WHERE window_start < ${windowStart}
-    `;
-
-    // 2. 获取当前窗口的请求计数
+    // 1. 获取当前窗口的请求计数（查询时过滤过期数据，不需要先DELETE）
     const result = await sql`
       SELECT COALESCE(SUM(request_count), 0) as total_requests
       FROM rate_limit_global
@@ -49,7 +87,7 @@ export async function checkGlobalRateLimit(): Promise<boolean> {
 
     const currentCount = parseInt(result[0]?.["total_requests"] || "0");
 
-    // 3. 如果超过限制，拒绝请求
+    // 2. 如果超过限制，拒绝请求
     if (currentCount >= GLOBAL_LIMIT) {
       console.warn(
         `[Rate Limit] Global limit exceeded: ${currentCount} requests in last ${GLOBAL_WINDOW_SECONDS} seconds`,
@@ -57,7 +95,7 @@ export async function checkGlobalRateLimit(): Promise<boolean> {
       return false;
     }
 
-    // 4. 记录本次请求（插入或更新当前分钟的记录）
+    // 3. 记录本次请求（插入或更新当前分钟的记录）
     const currentMinute = new Date(Math.floor(now.getTime() / 60000) * 60000);
 
     await sql`
@@ -68,6 +106,9 @@ export async function checkGlobalRateLimit(): Promise<boolean> {
         request_count = rate_limit_global.request_count + 1,
         updated_at = ${now}
     `;
+
+    // 4. 异步清理过期记录（不阻塞响应）
+    cleanupExpiredRecords();
 
     return true;
   } catch (error) {
@@ -90,17 +131,21 @@ export function generateSubmitToken(): string {
 /**
  * 验证提交 token 格式是否有效
  * 只检查 token 格式和时间，不检查是否已使用
- * 支持加密token格式：timestamp-clientTimestamp-hash（3部分）
+ * 格式：timestamp-random（2部分）
  */
 export function validateSubmitTokenFormat(token: string): boolean {
   if (!token) return false;
 
   const parts = token.split("-");
-  // 支持加密token格式（3部分：timestamp-clientTimestamp-hash）
-  if (parts.length !== 3) return false;
+  // 新格式：timestamp-random（2部分）
+  if (parts.length !== 2) return false;
 
   const timestamp = parseInt(parts[0] || '');
   if (isNaN(timestamp)) return false;
+
+  // 检查随机字符串长度（32字符）
+  const random = parts[1];
+  if (!random || random.length !== 32) return false;
 
   // Token 有效期 2 分钟（缩短以减少重放攻击风险）
   const now = Date.now();
@@ -116,6 +161,10 @@ export function validateSubmitTokenFormat(token: string): boolean {
 /**
  * 检查并标记token为已使用（防止重放攻击）
  * 返回true表示token有效且未使用，返回false表示token已被使用或无效
+ *
+ * 使用原子操作防止竞态条件：
+ * - 直接 INSERT ... ON CONFLICT ... RETURNING
+ * - 只有首次插入成功才返回数据
  */
 export async function validateAndConsumeToken(token: string): Promise<boolean> {
   // 1. 先检查格式
@@ -124,27 +173,22 @@ export async function validateAndConsumeToken(token: string): Promise<boolean> {
   }
 
   try {
-    // 2. 检查token是否已被使用
-    const existing = await sql`
-      SELECT token FROM used_tokens
-      WHERE token = ${token}
-      LIMIT 1
-    `;
-
-    if (existing.length > 0) {
-      console.warn('[Token Reuse] Token已被使用:', token);
-      return false;
-    }
-
-    // 3. 标记token为已使用
+    // 2. 原子操作：尝试插入token，如果已存在则不插入
     const timestamp = parseInt(token.split('-')[0] || '0');
     const expiresAt = new Date(timestamp + TOKEN_VALIDITY);
 
-    await sql`
+    const result = await sql`
       INSERT INTO used_tokens (token, expires_at)
       VALUES (${token}, ${expiresAt.toISOString()})
       ON CONFLICT (token) DO NOTHING
+      RETURNING token
     `;
+
+    // 3. 只有首次插入成功才返回 true
+    if (result.length === 0) {
+      console.warn('[Token Reuse] Token已被使用:', token);
+      return false;
+    }
 
     // 4. 清理过期token（异步，不阻塞）
     sql`DELETE FROM used_tokens WHERE expires_at < NOW()`.catch(err => {
